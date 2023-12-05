@@ -15,7 +15,9 @@ const withMDX = nextMDX({
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  basePath: '/generative',
   pageExtensions: ['js', 'jsx', 'ts', 'tsx', 'mdx'],
+  output: 'standalone',
 }
 
 export default withSearch(withMDX(nextConfig))
