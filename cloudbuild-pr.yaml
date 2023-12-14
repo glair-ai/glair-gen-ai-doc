@@ -1,0 +1,88 @@
+steps:
+  - id: Dockerfile Linter
+    dir: ${_SERVICE}/scripts/docker/
+    name: 'hadolint/hadolint:latest-alpine'
+    entrypoint: hadolint
+    args: ['--failure-threshold', 'error', 'Dockerfile']
+    waitFor: ['-']
+
+  - id: Build Image
+    dir: ${_SERVICE}
+    name: gcr.io/cloud-builders/docker
+    args:
+      - 'build'
+      - '--tag=${_REGISTRY_URL}/${_AWS_ECR_NAME}:latest'
+      - '--cache-from=${_REGISTRY_URL}/${_AWS_ECR_NAME}:latest'
+      - '--build-arg'
+      - 'BUILDKIT_INLINE_CACHE=1'
+      - '--file=scripts/docker/Dockerfile'
+      - '.'
+    # waitFor:
+    #   - 'Build and test Code'
+
+  - id: Trivy Scan
+    name: ${_GCR_REPO}/$PROJECT_ID/infra-vision/trivyscan:latest
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        trivy image \
+          --severity MEDIUM,HIGH,CRITICAL \
+          --exit-code 1 \
+          --light --no-progress \
+          --ignore-unfixed \
+          ${_REGISTRY_URL}/${_AWS_ECR_NAME}:latest \
+          2>&1 | tee scan-result.txt
+    waitFor:
+      - 'Build Image'
+      
+  - id: Show Scan Result to Pull Request comment
+    name: ${_GCR_REPO}/$PROJECT_ID/infra-vision/github
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        if [[ "${_PR_NUMBER}" != "" ]]; then 
+          gh_comment_template='<details>\n  <summary>Trivy Result</summary>\n\n  ```\n%s\n  ```\n</details>'
+          gh_comment=$(printf "$$gh_comment_template" "$(cat scan-result.txt)")
+          /bin/gh "$@" pr review $_PR_NUMBER -R $_GITHUB_USER/$REPO_NAME -c -b "$$gh_comment"
+        else
+          echo "Not a Pull Request, Skip!"
+        fi
+    secretEnv:
+      - 'GH_TOKEN'
+    waitFor:
+      - 'Trivy Scan'
+      
+  # Get the N as total value from each type of vulns
+  # Example:
+  # Total: N (MEDIUM: X, HIGH: Y, CRITICAL: Z)
+  - id: Check Trivy Result
+    name: alpine
+    entrypoint: /bin/sh
+    args:
+      - '-c'
+      - |
+        if [[ `grep -Ec 'Total:.*[1-9]+.*' scan-result.txt` -gt 0 ]]; 
+        then
+          echo "Trivy detected vulnerabilites. To see more details please refer to 'Trivy Scan' console. If you have any other question, feel free to ask to SRE Team.";
+          exit 1
+        fi
+
+options:
+  env:
+    - 'DOCKER_BUILDKIT=1'
+    - 'COMPOSE_DOCKER_CLI_BUILD=1'
+    
+substitutions:
+  _GITHUB_USER: glair-ai
+  _REGISTRY_URL: 170848542527.dkr.ecr.ap-southeast-3.amazonaws.com
+  _GCR_REPO: asia-southeast2-docker.pkg.dev
+
+availableSecrets:
+  secretManager:
+  - versionName: projects/$PROJECT_ID/secrets/INFRA_GL_GITHUB_TOKEN/versions/latest
+    env: 'GH_TOKEN'
+  # - versionName: projects/$PROJECT_ID/secrets/INFRA_GL_SONARQUBE_TOKEN/versions/latest
+  #   env: 'SCA_TOKEN'
+  

@@ -1,0 +1,73 @@
+steps:
+  - id: Dockerfile Linter
+    dir: ${_SERVICE}/scripts/docker/
+    name: 'hadolint/hadolint:latest-alpine'
+    entrypoint: hadolint
+    args: ['--failure-threshold', 'error', 'Dockerfile']
+    waitFor: ['-']
+
+  - id: Export ECR Password
+    name: ${_GCR_REPO}/$PROJECT_ID/infra-vision/deployer:vision
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        aws ecr get-login-password --region ${_AWS_ECR_REGION} > token.key
+    env:
+      - 'HOME=/root'
+    waitFor: ['-']
+
+  - id: Login ECR
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args: 
+      - '-c'
+      - |
+        cat token.key | docker login --username AWS --password-stdin ${_REGISTRY_URL}
+    waitFor: 
+      - 'Export ECR Password'
+
+  - id: Build Image
+    dir: ${_SERVICE}
+    name: gcr.io/cloud-builders/docker
+    args:
+      - 'build'
+      - '--tag=${_REGISTRY_URL}/${_AWS_ECR_NAME}:latest'
+      - '--cache-from=${_REGISTRY_URL}/${_AWS_ECR_NAME}:latest'
+      - '--build-arg'
+      - 'BUILDKIT_INLINE_CACHE=1'
+      - '--file=scripts/docker/Dockerfile'
+      - '.'
+
+  - id: Push Image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - 'push'
+      - '${_REGISTRY_URL}/${_AWS_ECR_NAME}:latest'
+    waitFor:
+      - 'Build Image'
+
+  - id: Deploy App
+    dir: infra/script
+    name: ${_GCR_REPO}/$PROJECT_ID/infra-vision/deployer:vision
+    env:
+      - 'IP=${_IP}'
+      - 'DOCKER_REPO=${_REGISTRY_URL}'
+      - 'AWS_ECR_REGION=${_AWS_ECR_REGION}'
+      - 'DOCKER_SERVICE=${_AWS_ECR_NAME}'
+      - 'SERVICE=${_SERVICE}'
+    entrypoint: 'bash'
+    args:
+      - 'deploy.sh'
+    waitFor:
+      - 'Push Image'
+
+options:
+  env:
+    - 'DOCKER_BUILDKIT=1'
+    - 'COMPOSE_DOCKER_CLI_BUILD=1'
+
+substitutions:
+  _REGISTRY_URL: 170848542527.dkr.ecr.ap-southeast-3.amazonaws.com
+  _AWS_ECR_REGION: ap-southeast-3
+  _GCR_REPO: asia-southeast2-docker.pkg.dev
